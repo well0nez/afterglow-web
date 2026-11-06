@@ -29,6 +29,34 @@ Each run has to begin on that page. The run page arms the chain only when it
 was reached from there, so a browser restoring its last session cannot set it
 off again with nobody watching.
 
+## URL knobs
+
+The run page takes query parameters; combine them like
+`jb.html?log=1&afterglow=run&tries=2`. All of these are live on 14.00.
+
+| Param | Default | What it does |
+|---|---|---|
+| `attempts` | 8 | how many times the WebKit stage may miss before giving up (a miss costs nothing) |
+| `tries` | 4 | how many times the kernel stage retries a recoverable miss in one page load — each retry is another chance, and another roll of the hole race |
+| `seed` | 45 | apm clones seeded per shot, 8–60; the unit ceiling binds the same per-boot budget, so higher is not free |
+| `shots=3` | 4 | merged handle/mapping chain — one shot fewer, so one fewer exposure to the uncatchable race, at a form with less evidence behind it |
+| `log=1` | off | the full step log |
+| `stats=1` | — | run history, see below |
+| `afterglow=probe` | — | readiness probe: fires nothing, patches nothing, answers whether this process can carry the exploit |
+
+## Run history
+
+Every run appends one record to a 40-entry ring in the browser's
+localStorage: time, firmware, user agent, the outcome (`ok`, `gave-up`,
+`fail`, `threw`), and per attempt the spray window, the sprayed count, the
+shots fired, and the last line the chain printed. Open
+`jb.html?stats=1` to view it. Tested live on 14.00.
+
+This is also the report the last section asks for: when a box fails more
+often than the odds say it should, the numbers in that view — window
+milliseconds, sprayed counts, where attempts stopped — are what turns "it
+crashes a lot" into something tunable.
+
 ## What is shipped
 
 | File | What it is |
@@ -83,38 +111,10 @@ on with a stack pointer out of a stranger's object and the console dies right
 there — no message, no clean shutdown. Don't run this with anything unsaved on
 the console.
 
-## URL knobs
-
-The run page takes query parameters; combine them like
-`jb.html?log=1&afterglow=run&tries=2`.
-
-| Param | Default | What it does |
-|---|---|---|
-| `attempts` | 8 | how many times the WebKit stage may miss before giving up (a miss costs nothing) |
-| `tries` | 4 | how many times the kernel stage retries a recoverable miss in one page load — each retry is another chance, and another roll of the hole race |
-| `seed` | 45 | apm clones seeded per shot, 8–60; the unit ceiling binds the same per-boot budget, so higher is not free |
-| `shots=3` | 4 | merged handle/mapping chain — one shot fewer, so one fewer exposure to the uncatchable race, at a form with less evidence behind it |
-| `log=1` | off | the full step log |
-| `stats=1` | — | run history, see below |
-| `afterglow=probe` | — | readiness probe: fires nothing, patches nothing, answers whether this process can carry the exploit |
-
-## Run history
-
-Every run appends one record to a 40-entry ring in the browser's
-localStorage: time, firmware, user agent, the outcome (`ok`, `gave-up`,
-`fail`, `threw`), and per attempt the spray window, the sprayed count, the
-shots fired, and the last line the chain printed. Open
-`jb.html?stats=1` to view it.
-
-This is also the report the last section asks for: when a box fails more
-often than the odds say it should, the numbers in that view — window
-milliseconds, sprayed counts, where attempts stopped — are what turns "it
-crashes a lot" into something tunable.
-
 ## Reviews wanted
 
 Issues and pull requests welcome, and so is a report that it simply worked. Say
-which model and firmware you tried.
+which model and firmware you tried — `jb.html?stats=1` has the numbers.
 
 ## Credits
 
