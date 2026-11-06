@@ -116,6 +116,118 @@ function terse(s) {
 
 const SHOW_LOG = params.get("log") === "1";
 
+/* Run history. Every afterglow run appends one record to a ring in
+   localStorage: outcome, firmware, UA, and the per-attempt numbers the chain
+   measured. The README asks reporters for exactly this -- a built-in view
+   beats a photograph of the log. Rendering only; nothing here arms. The
+   whole block is best-effort: a full or refusing localStorage must never
+   affect a run. */
+const STATS_KEY = "afterglow.runs";
+const STATS_CAP = 40;
+
+function loadRuns() {
+  try {
+    const a = JSON.parse(
+      localStorage.getItem(STATS_KEY) || "[]",
+    );
+    return Array.isArray(a) ? a : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function recordRun(fwKey, ok, threw, diag) {
+  try {
+    const att =
+      diag && diag.attempts ? diag.attempts : [];
+    const last =
+      att.length ? att[att.length - 1] : null;
+    const runs = loadRuns();
+    runs.push({
+      t: new Date().toISOString(),
+      fw: fwKey,
+      ua:
+        (typeof navigator !== "undefined" &&
+          navigator.userAgent) ||
+        "",
+      ok: !!ok,
+      out: ok
+        ? "ok"
+        : threw
+          ? "threw"
+          : last && last.retry
+            ? "gave-up"
+            : "fail",
+      tries: att.length,
+      shots: diag && diag.shots ? diag.shots : 0,
+      att: att.map(function (a) {
+        return [
+          a.last || "",
+          a.retry ? 1 : 0,
+          a.window == null ? "" : Math.round(a.window),
+          a.sprayed || 0,
+          a.fired || 0,
+        ];
+      }),
+    });
+    while (runs.length > STATS_CAP) runs.shift();
+    localStorage.setItem(
+      STATS_KEY,
+      JSON.stringify(runs),
+    );
+  } catch (e) {}
+}
+
+function showStats() {
+  try {
+    clearInterval(watchdog);
+  } catch (e) {}
+  if (document.body)
+    document.body.className = "log";
+  const stEl =
+    document.getElementById("state");
+  if (stEl)
+    stEl.textContent =
+      "run history -- " + STATS_KEY;
+  const runs = loadRuns();
+  let text;
+  if (!runs.length) {
+    text = "no runs recorded yet";
+  } else {
+    text = runs
+      .map(function (r) {
+        const head =
+          r.t +
+          "  fw=" + r.fw +
+          "  " + r.out +
+          "  tries=" + r.tries +
+          (r.shots ? "  shots=" + r.shots : "");
+        const body = r.att
+          .map(function (a, i) {
+            return (
+              "  [" + (i + 1) + "] " +
+              (a[1] ? "retry" : "stop ") +
+              "  window=" +
+              Math.round(Number(a[2]) || 0) + "ms" +
+              "  sprayed=" + a[3] +
+              "  fired=" + a[4] +
+              "\n      " + a[0]
+            );
+          })
+          .join("\n");
+        return (
+          head + "\n  " + r.ua + "\n" + body
+        );
+      })
+      .join("\n\n");
+  }
+  const out = document.getElementById("out");
+  if (out) out.textContent = text;
+}
+
+const STATS_MODE = params.get("stats") === "1";
+if (STATS_MODE) showStats();
+
 const ramBox =
   document.getElementById("ramBox");
 
@@ -315,7 +427,7 @@ let mainMf = null,
 
 
 (async function () {
-  if (SENT_HOME) return;
+  if (SENT_HOME || STATS_MODE) return;
   let p = null;
 
   try {
@@ -888,9 +1000,9 @@ let mainMf = null,
       /* Arming requires a step from the landing page. A probe
          (afterglow=probe) fires no trigger and patches nothing, so a restored
          page may run that. */
-      let agOk = false, agRan = false;
+      let agOk = false, agRan = false, agThrew = null, ag = null;
       try {
-        const ag = await import("./afterglow.js");
+        ag = await import("./afterglow.js");
         // Exactly what afterglow reaches for, counted rather than guessed.
         const agCtx = {
           p: p, callAddr: callAddr, bufAddr: bufAddr, errno: errno,
@@ -906,10 +1018,37 @@ let mainMf = null,
           /* set before the call, not after: a throw inside the chain can
              still have fired a shot, and that is the case `ran` is for */
           agRan = true;
-          agOk = !!(await ag.runAfterglow(agCtx));
+          /* URL knobs: tries bounds the hole-race exposure per page load,
+             seed shapes the apm spray. Defaults match the shipped tuning. */
+          const agOpts = {
+            tries: Math.min(
+              8,
+              Math.max(
+                1,
+                parseInt(params.get("tries") || "4", 10) || 4,
+              ),
+            ),
+          };
+          const seedParam = parseInt(
+            params.get("seed") || "0",
+            10,
+          );
+          if (seedParam) agOpts.seed = seedParam;
+          agOk = !!(await ag.runAfterglow(agCtx, agOpts));
         }
-      } catch (agError) {
-        mark("AG-FAIL", agError && agError.message ? agError.message : String(agError));
+      } catch (e) {
+        agThrew = e;
+        mark("AG-FAIL", e && e.message ? e.message : String(e));
+      }
+      if (params.get("afterglow") !== "probe") {
+        try {
+          recordRun(
+            fwKey,
+            agOk,
+            agThrew,
+            ag.lastDiag ? ag.lastDiag() : null,
+          );
+        } catch (e) {}
       }
       finishUI(agOk, agRan);
       // Swap the address out. The browser restores the last one after a

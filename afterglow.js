@@ -186,19 +186,32 @@ let PATCHES = null;
 
 /* ------------------------------------------------------------- the host */
 
-const STATE = { ctx: null, units: {}, clones: 0, base: null, stubs: {}, batch: undefined, retry: false };
+const STATE = { ctx: null, units: {}, clones: 0, base: null, stubs: {}, batch: undefined, retry: false, diag: null, diagCur: null };
 
 function host() {
   if (!STATE.ctx) throw new Error("afterglow: no host installed");
   return STATE.ctx;
 }
 
-function say(fmt) { host().mark("AG", fmt); }
+/* The last line said is recorded on the open attempt record, so any return
+   path -- however many of them there are -- leaves its reason behind. */
+function say(fmt) {
+  if (STATE.diagCur) STATE.diagCur.last = fmt;
+  host().mark("AG", fmt);
+}
 
 const LOW = 0x100000000;
 
 function v(low, hi) { return new int64(low >>> 0, (hi || 0) >>> 0); }
 function plus(a, n) { return n < 0 ? a.sub32(-n) : a.add32(n); }
+
+/* URL knobs arrive as strings and typos must not become kernel runs: a seed
+   of 600 would burn the whole per-boot apm budget in one shot. */
+function clampInt(x, lo, hi, dflt) {
+  const n = parseInt(x, 10);
+  if (!isFinite(n)) return dflt;
+  return Math.min(hi, Math.max(lo, n));
+}
 function same(a, b) { return !!b && a.low === b.low && a.hi === b.hi; }
 function inText(a) { return a.hi >= 0xffffff00 && a.low !== 0; }
 function inHeap(a) { return a.hi >= 0xffff0000 && a.hi < 0xffffff00 && a.low !== 0; }
@@ -574,6 +587,12 @@ function shooter(gad) {
     for (let i = 0; i < socks.length; i++) sc(S.close, socks[i]);
     say("    window " + this.window.toFixed(2) + " ms for " + socks.length
         + " setsockopt in " + (this.batched ? prepared.length : socks.length) + " entries");
+    if (STATE.diagCur) {
+      STATE.diagCur.window = this.window;
+      STATE.diagCur.sprayed = this.sprayed;
+      STATE.diagCur.fired = this.fired;
+      if (r === null && this.why) STATE.diagCur.shotWhy = this.why;
+    }
     return r;
   };
 
@@ -2102,9 +2121,25 @@ export async function runAfterglow(ctx, opts) {
     ctx.mark("AG", "no kernel stage for firmware " + ctx.fw + " -- refusing");
     return false;
   }
-  const max = (opts && opts.tries) || 4;
+  /* Host knobs arrive through opts; a host that passes none gets the shipped
+     tuning. The seed bound is not arbitrary -- clones and the unit ceiling
+     draw on the same per-boot apm budget, and a typo must not drain it. */
+  TUNE.seed = clampInt(opts && opts.seed, 8, 60, 45);
+  /* What the host can persist after the run settles: outcome plus the
+     numbers this console measured, one record per attempt. Nothing here is
+     written while a window is open. */
+  STATE.diag = {
+    shots: ((ctx.params && ctx.params.get("shots")) || "4") === "3" ? 3 : 4,
+    attempts: [],
+  };
+  const max = clampInt(opts && opts.tries, 1, 8, 4);
   for (let n = 1; n <= max; n++) {
+    STATE.diagCur = {};
     const r = await attempt(ctx, opts);
+    STATE.diagCur.ok = !!r;
+    STATE.diagCur.retry = STATE.retry;
+    STATE.diag.attempts.push(STATE.diagCur);
+    STATE.diagCur = null;
     if (r) return r;
     if (!STATE.retry) return false;
     if (n === max) { say("gave up after " + n + " attempts"); return false; }
@@ -2113,3 +2148,7 @@ export async function runAfterglow(ctx, opts) {
   }
   return false;
 }
+
+/* The settled record of the last runAfterglow call, for a host that wants to
+   keep run history. Null before the first run. */
+export function lastDiag() { return STATE.diag; }
